@@ -77,9 +77,28 @@ impl Cfg {
             // The OS is the last recognised component: `aarch64-linux-android` is Android, not
             // Linux, while `x86_64-unknown-linux-gnu` is Linux.
             const OS: &[&str] = &[
-                "android", "windows", "darwin", "macos", "ios", "tvos", "watchos", "freebsd",
-                "netbsd", "openbsd", "dragonfly", "solaris", "illumos", "haiku", "emscripten",
-                "wasi", "fuchsia", "redox", "aix", "linux", "none", "unknown",
+                "android",
+                "windows",
+                "darwin",
+                "macos",
+                "ios",
+                "tvos",
+                "watchos",
+                "freebsd",
+                "netbsd",
+                "openbsd",
+                "dragonfly",
+                "solaris",
+                "illumos",
+                "haiku",
+                "emscripten",
+                "wasi",
+                "fuchsia",
+                "redox",
+                "aix",
+                "linux",
+                "none",
+                "unknown",
             ];
             let os = parts
                 .iter()
@@ -88,8 +107,16 @@ impl Cfg {
                 .copied()
                 .unwrap_or("unknown");
             const ENV: &[&str] = &[
-                "gnu", "musl", "msvc", "uclibc", "newlib", "eabi", "gnueabi", "gnueabihf",
-                "gnuabi64", "gnuabihf",
+                "gnu",
+                "musl",
+                "msvc",
+                "uclibc",
+                "newlib",
+                "eabi",
+                "gnueabi",
+                "gnueabihf",
+                "gnuabi64",
+                "gnuabihf",
             ];
             let env = parts
                 .last()
@@ -97,9 +124,24 @@ impl Cfg {
                 .filter(|p| ENV.contains(p))
                 .unwrap_or("");
             const UNIX: &[&str] = &[
-                "linux", "android", "darwin", "macos", "ios", "tvos", "watchos", "freebsd",
-                "netbsd", "openbsd", "dragonfly", "solaris", "illumos", "haiku", "emscripten",
-                "aix", "redox", "fuchsia",
+                "linux",
+                "android",
+                "darwin",
+                "macos",
+                "ios",
+                "tvos",
+                "watchos",
+                "freebsd",
+                "netbsd",
+                "openbsd",
+                "dragonfly",
+                "solaris",
+                "illumos",
+                "haiku",
+                "emscripten",
+                "aix",
+                "redox",
+                "fuchsia",
             ];
             let family = if os == "windows" {
                 "windows"
@@ -132,7 +174,10 @@ impl Cfg {
             }
             if let Some((key, value)) = entry.split_once('=') {
                 if key.is_empty() || value.is_empty() {
-                    return Err(Diagnostic::new("E_TARGET", "malformed --cfg key=value entry"));
+                    return Err(Diagnostic::new(
+                        "E_TARGET",
+                        "malformed --cfg key=value entry",
+                    ));
                 }
                 cfg.values
                     .entry(key.into())
@@ -179,8 +224,7 @@ impl Cfg {
             syn::Meta::List(list) => {
                 let nested: Punctuated<syn::Meta, Token![,]> =
                     list.parse_args_with(Punctuated::parse_terminated).ok()?;
-                let values: Vec<Option<bool>> =
-                    nested.iter().map(|meta| self.eval(meta)).collect();
+                let values: Vec<Option<bool>> = nested.iter().map(|meta| self.eval(meta)).collect();
                 match list.path.get_ident()?.to_string().as_str() {
                     "not" => {
                         let [value] = values.as_slice() else {
@@ -244,8 +288,20 @@ fn allowed_cfg_attr(meta: &syn::Meta) -> bool {
     let name = name.to_string();
     matches!(
         name.as_str(),
-        "doc" | "cfg" | "cfg_attr" | "path" | "allow" | "warn" | "deny" | "forbid" | "expect"
-            | "inline" | "cold" | "must_use" | "deprecated" | "track_caller"
+        "doc"
+            | "cfg"
+            | "cfg_attr"
+            | "path"
+            | "allow"
+            | "warn"
+            | "deny"
+            | "forbid"
+            | "expect"
+            | "inline"
+            | "cold"
+            | "must_use"
+            | "deprecated"
+            | "track_caller"
     ) || CRATE_ATTRIBUTES.contains(&name.as_str())
 }
 
@@ -269,15 +325,14 @@ pub(crate) fn cfg_status(attrs: &[Attribute], cfg: &Cfg) -> CfgStatus {
                 Err(_) => status = CfgStatus::Unknown,
             }
         } else if attr.path().is_ident("cfg_attr") {
-            let args: Vec<syn::Meta> = match attr
-                .parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
-            {
-                Ok(args) => args.into_iter().collect(),
-                Err(_) => {
-                    status = CfgStatus::Unknown;
-                    continue;
-                }
-            };
+            let args: Vec<syn::Meta> =
+                match attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated) {
+                    Ok(args) => args.into_iter().collect(),
+                    Err(_) => {
+                        status = CfgStatus::Unknown;
+                        continue;
+                    }
+                };
             let Some(predicate) = args.first() else {
                 status = CfgStatus::Unknown;
                 continue;
@@ -1019,7 +1074,10 @@ mod tests {
     fn android_target_decides_target_os_predicates() {
         let cfg = Cfg::new(Some("aarch64-linux-android"), &[]).unwrap();
         assert_eq!(cfg.eval(&parse_quote!(target_os = "android")), Some(true));
-        assert_eq!(cfg.eval(&parse_quote!(not(target_os = "android"))), Some(false));
+        assert_eq!(
+            cfg.eval(&parse_quote!(not(target_os = "android"))),
+            Some(false)
+        );
         assert!(matches!(
             cfg_status(&[parse_quote!(#[cfg(target_os = "android")])], &cfg),
             CfgStatus::Active

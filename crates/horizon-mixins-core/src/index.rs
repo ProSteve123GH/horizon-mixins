@@ -202,10 +202,10 @@ impl Cfg {
                 }
                 // `unix` and `windows` mirror target_family, so a known target decides them
                 // in both directions; other bare flags are only known when explicitly enabled.
-                if name == "unix" || name == "windows" {
-                    if let Some(families) = self.values.get("target_family") {
-                        return Some(families.contains(&name));
-                    }
+                if (name == "unix" || name == "windows")
+                    && let Some(families) = self.values.get("target_family")
+                {
+                    return Some(families.contains(&name));
                 }
                 self.flags.contains(&name).then_some(true)
             }
@@ -233,7 +233,7 @@ impl Cfg {
                         (*value).map(|decided| !decided)
                     }
                     "all" => {
-                        if values.iter().any(|v| *v == Some(false)) {
+                        if values.contains(&Some(false)) {
                             Some(false)
                         } else if values.iter().all(|v| *v == Some(true)) {
                             Some(true)
@@ -242,7 +242,7 @@ impl Cfg {
                         }
                     }
                     "any" => {
-                        if values.iter().any(|v| *v == Some(true)) {
+                        if values.contains(&Some(true)) {
                             Some(true)
                         } else if values.iter().all(|v| *v == Some(false)) {
                             Some(false)
@@ -543,6 +543,9 @@ impl Index {
         }
         Ok(index)
     }
+    // The target config is threaded through the module tree; grouping these
+    // would obscure the existing source/path/prefix contract.
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &mut self,
         root: &Path,

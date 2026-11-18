@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use syn::{Attribute, Block, FnArg, Item, Signature};
+use syn::{Attribute, Block, FnArg, Item, Signature, Token, punctuated::Punctuated};
 
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -58,6 +58,161 @@ pub fn cfg(attrs: &[Attribute]) -> bool {
         .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
 }
 
+/// The configuration the source is read for: a target triple plus explicit `--cfg` entries.
+/// Anything this cannot decide stays unknown so the index keeps failing closed.
+#[derive(Debug, Clone, Default)]
+pub struct Cfg {
+    values: BTreeMap<String, BTreeSet<String>>,
+    flags: BTreeSet<String>,
+}
+
+impl Cfg {
+    pub fn new(target: Option<&str>, extra: &[String]) -> Result<Self> {
+        let mut cfg = Self::default();
+        if let Some(target) = target {
+            let parts: Vec<&str> = target.split('-').filter(|p| !p.is_empty()).collect();
+            let Some(&arch) = parts.first() else {
+                return Err(Diagnostic::new("E_TARGET", "empty target triple"));
+            };
+            // The OS is the last recognised component: `aarch64-linux-android` is Android, not
+            // Linux, while `x86_64-unknown-linux-gnu` is Linux.
+            const OS: &[&str] = &[
+                "android", "windows", "darwin", "macos", "ios", "tvos", "watchos", "freebsd",
+                "netbsd", "openbsd", "dragonfly", "solaris", "illumos", "haiku", "emscripten",
+                "wasi", "fuchsia", "redox", "aix", "linux", "none", "unknown",
+            ];
+            let os = parts
+                .iter()
+                .rev()
+                .find(|p| OS.contains(*p))
+                .copied()
+                .unwrap_or("unknown");
+            const ENV: &[&str] = &[
+                "gnu", "musl", "msvc", "uclibc", "newlib", "eabi", "gnueabi", "gnueabihf",
+                "gnuabi64", "gnuabihf",
+            ];
+            let env = parts
+                .last()
+                .copied()
+                .filter(|p| ENV.contains(p))
+                .unwrap_or("");
+            const UNIX: &[&str] = &[
+                "linux", "android", "darwin", "macos", "ios", "tvos", "watchos", "freebsd",
+                "netbsd", "openbsd", "dragonfly", "solaris", "illumos", "haiku", "emscripten",
+                "aix", "redox", "fuchsia",
+            ];
+            let family = if os == "windows" {
+                "windows"
+            } else if os == "wasi" || arch.starts_with("wasm") || arch == "asmjs" {
+                "wasm"
+            } else if UNIX.contains(&os) {
+                "unix"
+            } else {
+                ""
+            };
+            for (key, value) in [
+                ("target_arch", arch),
+                ("target_os", os),
+                ("target_env", env),
+                ("target_family", family),
+            ] {
+                cfg.values
+                    .entry(key.into())
+                    .or_default()
+                    .insert(value.into());
+            }
+            if !family.is_empty() {
+                cfg.flags.insert(family.into());
+            }
+        }
+        for entry in extra {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return Err(Diagnostic::new("E_TARGET", "empty --cfg entry"));
+            }
+            if let Some((key, value)) = entry.split_once('=') {
+                if key.is_empty() || value.is_empty() {
+                    return Err(Diagnostic::new("E_TARGET", "malformed --cfg key=value entry"));
+                }
+                cfg.values
+                    .entry(key.into())
+                    .or_default()
+                    .insert(value.into());
+            } else {
+                cfg.flags.insert(entry.to_string());
+            }
+        }
+        Ok(cfg)
+    }
+
+    /// Three-valued cfg evaluation: `Some(true)`/`Some(false)` only when this configuration
+    /// decides the predicate, `None` when it does not. `test` is deliberately left to
+    /// [`cfg_status`] so its existing fail-closed treatment cannot change.
+    fn eval(&self, meta: &syn::Meta) -> Option<bool> {
+        match meta {
+            syn::Meta::Path(path) => {
+                let name = path.get_ident()?.to_string();
+                if name == "test" {
+                    return None;
+                }
+                // `unix` and `windows` mirror target_family, so a known target decides them
+                // in both directions; other bare flags are only known when explicitly enabled.
+                if name == "unix" || name == "windows" {
+                    if let Some(families) = self.values.get("target_family") {
+                        return Some(families.contains(&name));
+                    }
+                }
+                self.flags.contains(&name).then_some(true)
+            }
+            syn::Meta::NameValue(nv) => {
+                let key = nv.path.get_ident()?.to_string();
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(value),
+                    ..
+                }) = &nv.value
+                else {
+                    return None;
+                };
+                let values = self.values.get(&key)?;
+                Some(values.contains(&value.value()))
+            }
+            syn::Meta::List(list) => {
+                let nested: Punctuated<syn::Meta, Token![,]> =
+                    list.parse_args_with(Punctuated::parse_terminated).ok()?;
+                let values: Vec<Option<bool>> =
+                    nested.iter().map(|meta| self.eval(meta)).collect();
+                match list.path.get_ident()?.to_string().as_str() {
+                    "not" => {
+                        let [value] = values.as_slice() else {
+                            return None;
+                        };
+                        (*value).map(|decided| !decided)
+                    }
+                    "all" => {
+                        if values.iter().any(|v| *v == Some(false)) {
+                            Some(false)
+                        } else if values.iter().all(|v| *v == Some(true)) {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                    "any" => {
+                        if values.iter().any(|v| *v == Some(true)) {
+                            Some(true)
+                        } else if values.iter().all(|v| *v == Some(false)) {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub(crate) enum CfgStatus {
     Active,
@@ -65,12 +220,39 @@ pub(crate) enum CfgStatus {
     Unknown,
 }
 
-pub(crate) fn cfg_status(attrs: &[Attribute]) -> CfgStatus {
+/// `test` is never decided from a target configuration: keep the upstream treatment of it.
+fn is_test_predicate(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            list.path.is_ident("not")
+                && list
+                    .parse_args::<syn::Path>()
+                    .is_ok_and(|path| path.is_ident("test"))
+        }
+        syn::Meta::NameValue(_) => false,
+    }
+}
+
+/// A carried `cfg_attr` attribute must be one that cannot expand code; this is the allowlist
+/// [`macro_attributes`] uses, in the form of a `syn::Meta` path.
+fn allowed_cfg_attr(meta: &syn::Meta) -> bool {
+    let path = meta.path();
+    let Some(name) = path.get_ident() else {
+        return tool_attribute(path);
+    };
+    let name = name.to_string();
+    matches!(
+        name.as_str(),
+        "doc" | "cfg" | "cfg_attr" | "path" | "allow" | "warn" | "deny" | "forbid" | "expect"
+            | "inline" | "cold" | "must_use" | "deprecated" | "track_caller"
+    ) || CRATE_ATTRIBUTES.contains(&name.as_str())
+}
+
+pub(crate) fn cfg_status(attrs: &[Attribute], cfg: &Cfg) -> CfgStatus {
     let mut status = CfgStatus::Active;
     for attr in attrs {
-        if attr.path().is_ident("cfg_attr") {
-            status = CfgStatus::Unknown;
-        } else if attr.path().is_ident("cfg") {
+        if attr.path().is_ident("cfg") {
             let predicate = attr.parse_args::<syn::Meta>();
             match predicate {
                 Ok(syn::Meta::Path(path)) if path.is_ident("test") => return CfgStatus::Inactive,
@@ -79,7 +261,42 @@ pub(crate) fn cfg_status(attrs: &[Attribute]) -> CfgStatus {
                         && list
                             .parse_args::<syn::Path>()
                             .is_ok_and(|path| path.is_ident("test")) => {}
-                _ => status = CfgStatus::Unknown,
+                Ok(meta) => match cfg.eval(&meta) {
+                    Some(true) => {}
+                    Some(false) => return CfgStatus::Inactive,
+                    None => status = CfgStatus::Unknown,
+                },
+                Err(_) => status = CfgStatus::Unknown,
+            }
+        } else if attr.path().is_ident("cfg_attr") {
+            let args: Vec<syn::Meta> = match attr
+                .parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+            {
+                Ok(args) => args.into_iter().collect(),
+                Err(_) => {
+                    status = CfgStatus::Unknown;
+                    continue;
+                }
+            };
+            let Some(predicate) = args.first() else {
+                status = CfgStatus::Unknown;
+                continue;
+            };
+            // Upstream deliberately fails closed on `test` in a cfg_attr: a
+            // test-only attribute can carry code, so it must not be assumed inert.
+            if is_test_predicate(predicate) {
+                status = CfgStatus::Unknown;
+                continue;
+            }
+            let decided = cfg.eval(predicate);
+            match decided {
+                // A false predicate ignores the whole attribute, carried attributes included.
+                Some(false) => {}
+                Some(true) | None => {
+                    if args[1..].iter().any(|meta| !allowed_cfg_attr(meta)) {
+                        status = CfgStatus::Unknown;
+                    }
+                }
             }
         }
     }
@@ -146,7 +363,7 @@ pub fn macro_attributes(attrs: &[Attribute]) -> bool {
 }
 
 impl Index {
-    pub fn load(root: &Path) -> Result<Self> {
+    pub fn load(root: &Path, cfg: &Cfg, selected: &BTreeSet<String>) -> Result<Self> {
         // Cargo canonicalizes what it reports (`\\?\C:\…` on Windows, a resolved junction on
         // macOS), so the root is compared and stripped in the same form.
         let root = root.canonicalize().map_err(io)?;
@@ -209,6 +426,9 @@ impl Index {
             if !metadata.workspace_members.contains(&package.id) {
                 continue;
             }
+            if !selected.is_empty() && !selected.contains(&package.name.to_string()) {
+                continue;
+            }
             let manifest = package
                 .manifest_path
                 .as_std_path()
@@ -257,6 +477,7 @@ impl Index {
                 }
                 index.read(
                     root,
+                    cfg,
                     path,
                     &prefix,
                     path.parent().unwrap(),
@@ -270,6 +491,7 @@ impl Index {
     fn read(
         &mut self,
         root: &Path,
+        cfg: &Cfg,
         path: &Path,
         prefix: &str,
         module_dir: &Path,
@@ -291,13 +513,14 @@ impl Index {
             .replace('\\', "/");
         let tree = syn::parse_file(&fs::read_to_string(&path).map_err(io)?)
             .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()).file(&path))?;
-        let file_cfg = cfg_status(&tree.attrs);
+        let file_cfg = cfg_status(&tree.attrs, cfg);
         if file_cfg == CfgStatus::Inactive {
             active.remove(&path);
             return Ok(());
         }
         self.items(
             root,
+            cfg,
             &tree.items,
             &file,
             prefix,
@@ -321,6 +544,7 @@ impl Index {
     fn items(
         &mut self,
         root: &Path,
+        cfg: &Cfg,
         items: &[Item],
         file: &str,
         prefix: &str,
@@ -334,7 +558,7 @@ impl Index {
             node.push(i);
             match item {
                 Item::Fn(f) => {
-                    let status = cfg_status(&f.attrs);
+                    let status = cfg_status(&f.attrs, cfg);
                     if status == CfgStatus::Inactive {
                         continue;
                     }
@@ -353,7 +577,7 @@ impl Index {
                 }
                 Item::Mod(m) => {
                     let next = format!("{prefix}::{}", m.ident);
-                    let status = cfg_status(&m.attrs);
+                    let status = cfg_status(&m.attrs, cfg);
                     if status == CfgStatus::Inactive {
                         continue;
                     }
@@ -369,6 +593,7 @@ impl Index {
                     if let Some((_, nested)) = &m.content {
                         self.items(
                             root,
+                            cfg,
                             nested,
                             file,
                             &next,
@@ -441,11 +666,11 @@ impl Index {
                             } else {
                                 path.parent().unwrap().join(path.file_stem().unwrap())
                             };
-                        self.read(root, &path, &next, &subdir, false, active)?;
+                        self.read(root, cfg, &path, &next, &subdir, false, active)?;
                     }
                 }
                 Item::Impl(imp) => {
-                    let status = cfg_status(&imp.attrs);
+                    let status = cfg_status(&imp.attrs, cfg);
                     if status == CfgStatus::Inactive {
                         continue;
                     }
@@ -461,13 +686,15 @@ impl Index {
                     syn::visit_mut::VisitMut::visit_type_mut(&mut Lifetimes, &mut identity_type);
                     let ty = tokens(&identity_type).replace(' ', "");
                     let identity = if let Some((_, tr, _)) = &imp.trait_ {
-                        format!("<{ty} as {}>", tokens(tr).replace(' ', ""))
+                        let mut trait_path = tr.clone();
+                        syn::visit_mut::VisitMut::visit_path_mut(&mut Lifetimes, &mut trait_path);
+                        format!("<{ty} as {}>", tokens(&trait_path).replace(' ', ""))
                     } else {
                         ty
                     };
                     for (j, member) in imp.items.iter().enumerate() {
                         if let syn::ImplItem::Fn(f) = member {
-                            let method_status = cfg_status(&f.attrs);
+                            let method_status = cfg_status(&f.attrs, cfg);
                             if method_status == CfgStatus::Inactive {
                                 continue;
                             }
@@ -497,7 +724,7 @@ impl Index {
                     }
                 }
                 Item::Struct(item) => {
-                    let status = cfg_status(&item.attrs);
+                    let status = cfg_status(&item.attrs, cfg);
                     if status == CfgStatus::Inactive {
                         continue;
                     }
@@ -619,7 +846,7 @@ impl Index {
                 Err(Diagnostic::new(
                     code,
                     format!(
-                        "no source function '{target}'; use an exact crate::module::function, Type::method or <Type as Trait>::method ID"
+                        "no source function '{target}'; use an exact ID with the Cargo crate name followed by its definition module path, such as my_crate::module::function, my_crate::Type::method or my_crate::<Type as Trait>::method"
                     ),
                 ))
             }
@@ -678,7 +905,7 @@ pub fn pattern_bindings(pat: &syn::Pat) -> Result<Vec<(String, bool)>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CfgStatus, cfg_status, macro_attributes};
+    use super::{Cfg, CfgStatus, cfg_status, macro_attributes};
     use syn::parse_quote;
 
     fn inner(source: &str) -> Vec<syn::Attribute> {
@@ -755,32 +982,61 @@ mod tests {
 
     #[test]
     fn production_cfg_recognizes_only_exact_test_predicates() {
+        let cfg = Cfg::default();
         assert!(matches!(
-            cfg_status(&[parse_quote!(#[cfg(not(test))])]),
+            cfg_status(&[parse_quote!(#[cfg(not(test))])], &cfg),
             CfgStatus::Active
         ));
         assert!(matches!(
-            cfg_status(&[parse_quote!(#[cfg(test)])]),
+            cfg_status(&[parse_quote!(#[cfg(test)])], &cfg),
             CfgStatus::Inactive
         ));
         assert!(matches!(
-            cfg_status(&[parse_quote!(#[cfg(feature = "x")])]),
+            cfg_status(&[parse_quote!(#[cfg(feature = "x")])], &cfg),
             CfgStatus::Unknown
         ));
         assert!(matches!(
-            cfg_status(&[parse_quote!(#[cfg_attr(test, inline)])]),
+            cfg_status(&[parse_quote!(#[cfg_attr(test, inline)])], &cfg),
             CfgStatus::Unknown
         ));
         assert!(matches!(
-            cfg_status(&[parse_quote!(#[cfg(not(any(test)))])]),
+            cfg_status(&[parse_quote!(#[cfg(not(any(test)))])], &cfg),
             CfgStatus::Unknown
         ));
         assert!(matches!(
-            cfg_status(&[
-                parse_quote!(#[cfg(feature = "x")]),
-                parse_quote!(#[cfg(test)])
-            ]),
+            cfg_status(
+                &[
+                    parse_quote!(#[cfg(feature = "x")]),
+                    parse_quote!(#[cfg(test)])
+                ],
+                &cfg
+            ),
             CfgStatus::Inactive
+        ));
+    }
+
+    #[test]
+    fn android_target_decides_target_os_predicates() {
+        let cfg = Cfg::new(Some("aarch64-linux-android"), &[]).unwrap();
+        assert_eq!(cfg.eval(&parse_quote!(target_os = "android")), Some(true));
+        assert_eq!(cfg.eval(&parse_quote!(not(target_os = "android"))), Some(false));
+        assert!(matches!(
+            cfg_status(&[parse_quote!(#[cfg(target_os = "android")])], &cfg),
+            CfgStatus::Active
+        ));
+        assert!(matches!(
+            cfg_status(&[parse_quote!(#[cfg(not(target_os = "android"))])], &cfg),
+            CfgStatus::Inactive
+        ));
+    }
+
+    #[test]
+    fn unknown_cfg_key_stays_unknown() {
+        let cfg = Cfg::new(Some("aarch64-linux-android"), &[]).unwrap();
+        assert_eq!(cfg.eval(&parse_quote!(unknown_key)), None);
+        assert!(matches!(
+            cfg_status(&[parse_quote!(#[cfg(unknown_key)])], &cfg),
+            CfgStatus::Unknown
         ));
     }
 }

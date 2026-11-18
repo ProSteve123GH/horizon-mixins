@@ -6,8 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Forward-facing manifest types ignore unknown keys so bundles written for newer tool versions
+/// can still be planned by this one. Nested validation types remain strict.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     #[serde(rename = "mod")]
     pub info: Mod,
@@ -91,7 +92,6 @@ impl ModuleVisibility {
     }
 }
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Mod {
     pub id: String,
     pub version: String,
@@ -99,7 +99,6 @@ pub struct Mod {
     pub priority: i32,
 }
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Compatibility {
     pub horizon_revision: Option<String>,
 }
@@ -140,7 +139,6 @@ impl Kind {
     }
 }
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Injection {
     pub id: String,
     /// Raw target path. Empty when the injection names a catalog `hook` instead; planning

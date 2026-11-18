@@ -6,7 +6,30 @@ TOML mods, HEAD and interior cancellation, BEFORE_CALL, AFTER_CALL, AFTER_ASSIGN
 MODIFY_EXPRESSION_VALUE, RETURN, MODIFY_ARG,
 MODIFY_ARGS, MODIFY_CONSTANT, MODIFY_VARIABLE, WRAP_OPERATION, OVERWRITE,
 lexical local capture, slices, accessor/invoker bridges, per-instance state, JSON planning and atomic
-Linux staging. Native mods run with your user privileges.
+Linux/Android staging. Native mods run with your user privileges.
+
+## Android compatibility fork
+
+This repository is a patched fork of
+[horizon-rust/horizon-mixins](https://github.com/horizon-rust/horizon-mixins),
+distributed under the MIT License (Copyright (c) 2026 levzzz); see [LICENSE](LICENSE)
+and [NOTICE](NOTICE). It preserves the upstream behavior on Linux and adds:
+
+- **Target-aware cfg evaluation.** Planning resolves `#[cfg(...)]` and `#[cfg_attr(...)]`
+  against a chosen Rust target triple rather than rejecting every target-dependent
+  predicate as unknown. Extra predicates can be supplied explicitly.
+- **`--target`, `--cfg` and `--package` flags.** `--target <TRIPLE>` selects the cfg target
+  and is also passed to Cargo as `--target` by `check`. `--cfg <PREDICATE>` adds a predicate
+  known to be enabled (repeatable), and `--package <NAME>` selects packages (repeatable,
+  deduplicated). These are common options, accepted by `plan`, `apply` and `check`.
+- **Android atomic staging.** Replacing an existing stage uses
+  `renameat2(RENAME_EXCHANGE)` on Android as well as Linux, through rustix's
+  `linux_kernel` backend. Other platforms keep the "use a fresh output directory"
+  diagnostic.
+- **Forward-compatible manifest metadata.** The forward-facing tables (document root,
+  `[mod]`, `[compatibility]` and `[[injection]]`) ignore unknown keys, so bundles carrying
+  metadata from a newer tool version can still be planned. Nested validation tables stay
+  strict.
 
 ```text
 Pristine Cargo workspace + independent mod bundles

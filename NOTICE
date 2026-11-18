@@ -1,0 +1,13 @@
+horizon-mixins — Android compatibility fork
+
+This is a patched fork of horizon-rust/horizon-mixins
+(https://github.com/horizon-rust/horizon-mixins), distributed under the MIT License.
+
+Upstream copyright: Copyright (c) 2026 levzzz
+The complete upstream license text is reproduced verbatim in LICENSE.
+
+Changes in this fork:
+  * Target-aware cfg evaluation during planning.
+  * Common CLI flags --target, --cfg and --package.
+  * Atomic stage replacement on Android as well as Linux (renameat2/RENAME_EXCHANGE).
+  * Forward-compatible manifest metadata: unknown keys in forward-facing tables are ignored.

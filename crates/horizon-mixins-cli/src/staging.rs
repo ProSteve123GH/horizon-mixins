@@ -144,7 +144,7 @@ pub fn publish(
     }
     Ok(true)
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn exchange(a: &Path, b: &Path) -> Result<()> {
     rustix::fs::renameat_with(
         rustix::fs::CWD,
@@ -160,10 +160,10 @@ fn exchange(a: &Path, b: &Path) -> Result<()> {
         )
     })
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn exchange(_: &Path, _: &Path) -> Result<()> {
     Err(Diagnostic::new(
         "E_ATOMIC_STAGE",
-        "atomic replacement of an existing stage currently requires Linux; use a fresh output directory",
+        "atomic replacement of an existing stage currently requires Linux or Android; use a fresh output directory",
     ))
 }

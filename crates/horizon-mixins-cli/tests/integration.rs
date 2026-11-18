@@ -1,10 +1,25 @@
-use horizon_mixins_core::{build_plan, index::Index, source};
+use horizon_mixins_core::{Cfg, index::Index, source};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+
+/// Default cfg for fixtures: no target or extra predicates, matching the upstream behavior
+/// these tests have always asserted.
+fn cfg() -> Cfg {
+    Cfg::new(None, &[]).unwrap()
+}
+
+/// Adapt the fixtures to `build_plan`'s cfg-aware signature. An empty selection means all
+/// packages, which is what these tests have always asserted.
+fn build_plan(
+    workspace: &Path,
+    mods: &Path,
+) -> horizon_mixins_core::Result<horizon_mixins_core::Plan> {
+    horizon_mixins_core::build_plan(workspace, mods, &cfg(), &BTreeSet::new())
+}
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -200,7 +215,7 @@ fn priority_ties_sort_by_mod_then_injection_id() {
 #[test]
 fn indexes_inline_external_path_inherent_and_trait_methods() {
     let f = Fixture::new();
-    let index = Index::load(&f.root).unwrap();
+    let index = Index::load(&f.root, &cfg(), &BTreeSet::new()).unwrap();
     for target in [
         "fixture_game::entity::advance",
         "fixture_game::entity::Entity::tick",
@@ -225,7 +240,7 @@ fn a_crate_answers_to_the_name_it_gives_itself() {
         "engine/src/lib.rs",
         "\nextern crate self as named_engine;\n",
     );
-    let index = Index::load(&f.root).unwrap();
+    let index = Index::load(&f.root, &cfg(), &BTreeSet::new()).unwrap();
     let real = index
         .resolve("fixture_game::entity::advance")
         .unwrap()
@@ -732,7 +747,7 @@ fn cfg_attributes_shared_module_sources_and_shadowing_fail_closed() {
         "engine/src/entity.rs",
         "\nimpl Another for Entity { fn marked(&self) -> i32 { 0 } }\n",
     );
-    let index = Index::load(&f.root).unwrap();
+    let index = Index::load(&f.root, &cfg(), &BTreeSet::new()).unwrap();
     assert!(
         index
             .resolve("fixture_game::entity::<Entity as Marker>::marked")

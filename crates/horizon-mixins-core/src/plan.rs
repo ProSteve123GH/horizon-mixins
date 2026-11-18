@@ -311,11 +311,21 @@ pub fn rustc(root: &Path) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
-pub fn build_plan(workspace: &Path, mods: &Path) -> Result<Plan> {
-    build_staged(workspace, mods).map(|(plan, _)| plan)
+pub fn build_plan(
+    workspace: &Path,
+    mods: &Path,
+    cfg: &index::Cfg,
+    selected: &BTreeSet<String>,
+) -> Result<Plan> {
+    build_staged(workspace, mods, cfg, selected).map(|(plan, _)| plan)
 }
 /// The plan plus the bundle crate and data files it stages (see [`crate::native::stage`]).
-pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::native::Extras)> {
+pub fn build_staged(
+    workspace: &Path,
+    mods: &Path,
+    cfg: &index::Cfg,
+    selected: &BTreeSet<String>,
+) -> Result<(Plan, crate::native::Extras)> {
     let root = workspace.canonicalize().map_err(io)?;
     let mut mods = manifest::load(mods)?;
     let inputs: BTreeMap<String, String> = source::files(&root)?
@@ -323,7 +333,7 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
         .map(|(name, bytes)| (name, source::fingerprint(bytes)))
         .collect();
     crate::native::resolve_hooks(&root, &mut mods)?;
-    let index = Index::load(&root)?;
+    let index = Index::load(&root, cfg, selected)?;
     let native = crate::native::plan(&root, &index.packages, &index.bins, &inputs, &mods)?;
     let mut injections = Vec::new();
     let mut planned_bridges = Vec::new();
@@ -389,7 +399,7 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
                 )
                 .file(&module.file))
             })?;
-            if index::cfg_status(&tree.attrs) != index::CfgStatus::Active {
+            if index::cfg_status(&tree.attrs, cfg) != index::CfgStatus::Active {
                 return Err(tag(Diagnostic::new(
                     "E_UNSUPPORTED_CFG",
                     "support module destination has unresolved cfg",

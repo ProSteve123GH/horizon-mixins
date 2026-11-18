@@ -10,6 +10,7 @@ pub mod sites;
 pub mod slices;
 pub mod source;
 pub use diagnostic::{Diagnostic, Result};
+pub use index::Cfg;
 pub use plan::{Plan, PlannedInjection, build_plan, build_staged};
 
 pub mod modules;

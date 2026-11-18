@@ -1,9 +1,12 @@
 mod lockfile;
 mod staging;
 use clap::{Args, Parser, Subcommand};
-use horizon_mixins_core::{Diagnostic, Result, build_plan, build_staged, diagnostic::io, native};
+use horizon_mixins_core::{
+    Cfg, Diagnostic, Result, build_plan, build_staged, diagnostic::io, native,
+};
 use serde_json::json;
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     time::Instant,
@@ -33,8 +36,6 @@ enum Action {
         trust_native_mods: bool,
         #[arg(long)]
         target_dir: Option<PathBuf>,
-        #[arg(long = "package")]
-        packages: Vec<String>,
     },
 }
 #[derive(Args)]
@@ -45,6 +46,15 @@ struct Common {
     mods: PathBuf,
     #[arg(long)]
     out: PathBuf,
+    /// Rust target triple used when evaluating target-dependent cfg attributes.
+    #[arg(long)]
+    target: Option<String>,
+    /// Extra cfg predicate to treat as enabled; repeat for more than one.
+    #[arg(long = "cfg")]
+    cfgs: Vec<String>,
+    /// Cargo package to build or test; repeat for more than one.
+    #[arg(long = "package")]
+    packages: Vec<String>,
 }
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -68,7 +78,9 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             protect(&root, &out)?;
             let mods = common.mods.canonicalize().map_err(io)?;
             protect(&mods, &out)?;
-            let plan = build_plan(&root, &mods)?;
+            let cfg = Cfg::new(common.target.as_deref(), &common.cfgs)?;
+            let selected: BTreeSet<String> = common.packages.iter().cloned().collect();
+            let plan = build_plan(&root, &mods, &cfg, &selected)?;
             let mut bytes = serde_json::to_vec_pretty(&plan)
                 .map_err(|e| Diagnostic::new("E_JSON", e.to_string()))?;
             bytes.push(b'\n');
@@ -83,7 +95,6 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             common,
             trust_native_mods,
             target_dir,
-            packages,
         } => {
             if !trust_native_mods {
                 return Err(Diagnostic::new(
@@ -91,9 +102,11 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     "native mods, dependencies and build scripts execute unsandboxed; review them and pass --trust-native-mods to run Cargo",
                 ));
             }
-            (common, Some((target_dir, packages)))
+            (common, Some(target_dir))
         }
     };
+    let cfg = Cfg::new(common.target.as_deref(), &common.cfgs)?;
+    let selected: BTreeSet<String> = common.packages.iter().cloned().collect();
     let root = common.workspace.canonicalize().map_err(io)?;
     let mods = common.mods.canonicalize().map_err(io)?;
     let out = staging::output_path(&common.out)?;
@@ -101,8 +114,8 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     protect(&mods, &out)?;
     let target = check
         .as_ref()
-        .map(|(target, _)| {
-            let target = target.clone().unwrap_or_else(|| {
+        .map(|target_dir| {
+            let target = target_dir.clone().unwrap_or_else(|| {
                 out.with_file_name(format!(
                     ".{}.cargo-target",
                     out.file_name().unwrap().to_string_lossy()
@@ -117,7 +130,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         protect(&out, target)?;
     }
     let _stage_lock = staging::lock(&out, "stage")?;
-    let (plan, extras) = build_staged(&root, &mods)?;
+    let (plan, extras) = build_staged(&root, &mods, &cfg, &selected)?;
     let mut files = horizon_mixins_transform::transform(&root, &plan)?;
     native::stage(&plan, &mut files, extras)?;
     lockfile::complete(&root, &out, &plan, &mut files)?;
@@ -126,7 +139,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     let mut result = json!({"status":"ok", "stage":out, "injections":plan.injections.len(), "bridges":plan.bridges.len(), "modules":plan.modules.len(), "states":plan.states.len(),
         "crates":plan.crates.len(), "data":plan.data.len(), "post_build":plan.post_build.len(),
         "stage_changed":stage_changed, "transformation_seconds":transformation_seconds});
-    if let Some((_, packages)) = check {
+    if check.is_some() {
         let target = target.unwrap();
         let _target_lock = staging::lock(&target, "cargo")?;
         let cargo_start = Instant::now();
@@ -134,11 +147,14 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         cmd.current_dir(&out)
             .args(["test", "--locked", "--offline", "--target-dir"])
             .arg(&target);
-        if packages.is_empty() {
+        if let Some(triple) = &common.target {
+            cmd.args(["--target", triple]);
+        }
+        if selected.is_empty() {
             cmd.arg("--workspace");
         }
-        for package in packages {
-            cmd.args(["--package", &package]);
+        for package in &selected {
+            cmd.args(["--package", package]);
         }
         let run = cmd.output().map_err(io)?;
         let stdout = String::from_utf8_lossy(&run.stdout);

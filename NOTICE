@@ -10,4 +10,3 @@ Changes in this fork:
   * Target-aware cfg evaluation during planning.
   * Common CLI flags --target, --cfg and --package.
   * Atomic stage replacement on Android as well as Linux (renameat2/RENAME_EXCHANGE).
-  * Forward-compatible manifest metadata: unknown keys in forward-facing tables are ignored.

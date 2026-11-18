@@ -26,10 +26,6 @@ and [NOTICE](NOTICE). It preserves the upstream behavior on Linux and adds:
   `renameat2(RENAME_EXCHANGE)` on Android as well as Linux, through rustix's
   `linux_kernel` backend. Other platforms keep the "use a fresh output directory"
   diagnostic.
-- **Forward-compatible manifest metadata.** The forward-facing tables (document root,
-  `[mod]`, `[compatibility]` and `[[injection]]`) ignore unknown keys, so bundles carrying
-  metadata from a newer tool version can still be planned. Nested validation tables stay
-  strict.
 
 ```text
 Pristine Cargo workspace + independent mod bundles

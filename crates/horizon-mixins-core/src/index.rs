@@ -345,13 +345,18 @@ pub(crate) fn cfg_status(attrs: &[Attribute], cfg: &Cfg) -> CfgStatus {
             }
             let decided = cfg.eval(predicate);
             match decided {
-                // A false predicate ignores the whole attribute, carried attributes included.
+                // A predicate the target config decides false removes the attribute.
                 Some(false) => {}
-                Some(true) | None => {
+                // A decided-true predicate is safe when its carried attributes
+                // cannot expand code.
+                Some(true) => {
                     if args[1..].iter().any(|meta| !allowed_cfg_attr(meta)) {
                         status = CfgStatus::Unknown;
                     }
                 }
+                // An undecided predicate stays fail-closed even with inert
+                // carried attributes: this is upstream's safety contract.
+                None => status = CfgStatus::Unknown,
             }
         }
     }
@@ -1088,6 +1093,26 @@ mod tests {
         assert!(matches!(
             cfg_status(&[parse_quote!(#[cfg(not(target_os = "android"))])], &cfg),
             CfgStatus::Inactive
+        ));
+    }
+
+    #[test]
+    fn undecided_cfg_attr_stays_unknown_but_target_decided_one_does_not() {
+        let cfg = Cfg::default();
+        assert!(matches!(
+            cfg_status(&[parse_quote!(#[cfg_attr(feature = "x", inline)])], &cfg),
+            CfgStatus::Unknown
+        ));
+        let android = Cfg::new(Some("aarch64-linux-android"), &[]).unwrap();
+        assert!(matches!(
+            cfg_status(
+                &[parse_quote!(#[cfg_attr(
+                    not(target_os = "android"),
+                    forbid(unsafe_code)
+                )])],
+                &android
+            ),
+            CfgStatus::Active
         ));
     }
 
